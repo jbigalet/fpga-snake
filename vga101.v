@@ -2,6 +2,7 @@ module vga101(
 	input CLK_100MHz,
 	input SwitchLeft,
 	input SwitchRight,
+	input SwitchReset,
 	output wire HSync,
 	output wire VSync,
 	output wire [2:0] Red,
@@ -84,12 +85,16 @@ module vga101(
 	assign Blue = B;
 	
 	// snake
-	reg [9:0] X;
-	reg [8:0] Y;
 	reg [1:0] direction; // right, bottom, left, top
 	reg [9:0] tailSize;
 	reg [9:0] tailX [maxTail-1:0];
 	reg [9:0] tailY [maxTail-1:0];
+	reg [9:0] discreteX;
+	reg [8:0] discreteY;
+	wire [9:0] X;
+	wire [8:0] Y;
+	assign X = borderWidth + snakeWidth * discreteX;
+	assign Y = borderWidth + snakeWidth * discreteY;
 	
 	reg oldSwitchLeft; // of the tick before
 	reg oldSwitchRight;
@@ -105,13 +110,14 @@ module vga101(
 	// random seeds
 	reg [9:0] LSFR_X;
 	reg [8:0] LSFR_Y;
-	wire [9:0] discreteLSFRX;
-	wire [8:0] discreteLSFRY;
-	assign discreteLSFRX = snakeWidth*LSFR_X;
-	assign discreteLSFRY = snakeWidth*LSFR_Y;
+	wire [14:0] discreteLSFRX;
+	wire [13:0] discreteLSFRY;
+	assign discreteLSFRX = borderWidth + snakeWidth * LSFR_X;
+	assign discreteLSFRY = borderWidth + snakeWidth * LSFR_Y;
 	
 	integer i;
-	initial begin
+	task init_task;
+	begin
 		advanceCounter = 1;
 		
 		counterX = 0;
@@ -125,11 +131,8 @@ module vga101(
 		cherryFound = 0;
 		cherryEaten = 0;
 		
-		LSFR_X = 10'd687;
-		LSFR_Y = 9'd53;
-		
-		X = snakeWidth*(xmax/(2*snakeWidth));
-		Y = snakeWidth*(ymax/(2*snakeWidth));
+		discreteX = (xmax-2*borderWidth)/(2*snakeWidth);
+		discreteY = (ymax-2*borderWidth)/(2*snakeWidth);
 		direction = 0;
 
 		tailSize = snakeInitialSize;
@@ -140,92 +143,102 @@ module vga101(
 			tailY[i] = 10'b0000000000;
 		end
 	end
+	endtask
 	
-	// handle sync
-	always @(posedge CLK_25MHz) begin
-		if(counterX >= oxbp-1) begin
-			counterX <= 0;
-			if(counterY >= oybp-1)
-				counterY <= 0;
-			else
-				counterY <= counterY + 1;
-		end else begin
-			counterX <= counterX + 1;
-		end
-	end
-	
-	// random seeds & cherry handle
-	always @(posedge CLK_25MHz) begin
-		LSFR_X = {LSFR_X[8:0], LSFR_X[9] ^ LSFR_X[6]};
-		LSFR_Y = {LSFR_Y[7:0], LSFR_Y[8] ^ LSFR_Y[4]};
+	initial begin
+		init_task;
 		
-		if( !cherryDisplayed ) begin // generate cherry positions
-			if( discreteLSFRX >= borderWidth && discreteLSFRX < xmax - borderWidth
-					&& discreteLSFRY >= borderWidth && discreteLSFRY < ymax - borderWidth ) begin // if in bounds, the cherry is generated
-				cherryX = discreteLSFRX;
-				cherryY = discreteLSFRY;
-				cherryFound = 1;
-			end else begin
-				cherryFound = 0;
-			end
-		end
+		// we only init the random seed on startup
+		LSFR_X = 10'd681;
+		LSFR_Y = 9'd53;
 	end
 	
-	// snake moves
 	always @(posedge CLK_25MHz) begin
-		if(advanceCounter >= maxAdvanceCounter-1) begin
-			advanceCounter <= 0;
-			
-			case(direction)
-				0: X = X + snakeWidth;
-				1: Y = Y + snakeWidth;
-				2: X = X - snakeWidth;
-				3: Y = Y - snakeWidth;
-				default: $display("error");
-			endcase
-			
-			for(i=maxTail-1 ; i>=1 ; i=i-1)
-				if(i<tailSize) begin
-					tailX[i] = tailX[i-1];
-					tailY[i] = tailY[i-1];
-				end
-			
-			tailX[0] = X;
-			tailY[0] = Y;
-			
-			// if on cherry, generate a new one & grow
-			if( cherryDisplayed ) begin
-				if( X >= cherryX && X < cherryX + snakeWidth
-					&& Y >= cherryY && Y < cherryY + snakeWidth ) begin
-				
-					tailSize = tailSize + 1;
-					cherryEaten = 1;
-				end else begin
-					cherryEaten = 0;
-				end
-			end else begin
-				if( cherryFound == 1 ) begin
-					cherryEaten = 0;
-				end
-			end
-			
-			
+	
+		if(!SwitchReset) begin
+			init_task;
+
 		end else begin
-			advanceCounter <= advanceCounter + 1;
-		end
-	end
 	
-	// changes direction pressing switches
-	always @(posedge CLK_25MHz) begin
-		if( oldSwitchLeft != SwitchLeft ) begin
-			oldSwitchLeft = SwitchLeft;
-			if( SwitchLeft == 1'b0 )
-				direction = direction - 1;
+			// handle sync
+			if(counterX >= oxbp-1) begin
+				counterX = 0;
+				if(counterY >= oybp-1)
+					counterY = 0;
+				else
+					counterY = counterY + 1;
+			end else begin
+				counterX = counterX + 1;
+			end
+		
+			// random seeds & cherry handle
+			LSFR_X = {LSFR_X[8:0], LSFR_X[9] ^ LSFR_X[6]};
+			LSFR_Y = {LSFR_Y[7:0], LSFR_Y[8] ^ LSFR_Y[4]};
+			
+			if( !cherryDisplayed ) begin // generate cherry positions
+				if( discreteLSFRX >= borderWidth && discreteLSFRX < xmax - borderWidth
+						&& discreteLSFRY >= borderWidth && discreteLSFRY < ymax - borderWidth ) begin // if in bounds, the cherry is generated
+					cherryX = discreteLSFRX;
+					cherryY = discreteLSFRY;
+					cherryFound = 1;
+				end else begin
+					cherryFound = 0;
+				end
+			end
+		
+			// snake moves
+			if(advanceCounter >= maxAdvanceCounter-1) begin
+				advanceCounter = 0;
 				
-		end else if ( oldSwitchRight != SwitchRight ) begin
-			oldSwitchRight = SwitchRight;
-			if( SwitchRight == 1'b0 )
-				direction = direction + 1;
+				case(direction)
+					0: discreteX = discreteX + 1;
+					1: discreteY = discreteY + 1;
+					2: discreteX = discreteX - 1;
+					3: discreteY = discreteY - 1;
+					default: $display("error");
+				endcase
+				
+				for(i=maxTail-1 ; i>=1 ; i=i-1)
+					if(i<tailSize) begin
+						tailX[i] = tailX[i-1];
+						tailY[i] = tailY[i-1];
+					end
+				
+				tailX[0] = X;
+				tailY[0] = Y;
+				
+				// if on cherry, generate a new one & grow
+				if( cherryDisplayed ) begin
+					if( X == cherryX && Y == cherryY ) begin
+					
+						tailSize = tailSize + 1;
+						cherryEaten = 1;
+					end else begin
+						cherryEaten = 0;
+					end
+				end else begin
+					if( cherryFound == 1 ) begin
+						cherryEaten = 0;
+					end
+				end
+				
+				
+			end else begin
+				advanceCounter = advanceCounter + 1;
+			end
+		
+			// changes direction pressing switches
+			if( oldSwitchLeft != SwitchLeft ) begin
+				oldSwitchLeft = SwitchLeft;
+				if( SwitchLeft == 1'b0 )
+					direction = direction - 1;
+					
+			end else if ( oldSwitchRight != SwitchRight ) begin
+				oldSwitchRight = SwitchRight;
+				if( SwitchRight == 1'b0 )
+					direction = direction + 1;
+			end
+			
 		end
 	end
 	
